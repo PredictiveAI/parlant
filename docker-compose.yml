@@ -1,0 +1,213 @@
+services:
+  # =============================================================================
+  # Database Services
+  # =============================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: parlant-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-parlant}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-parlant_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-parlant}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-parlant}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - parlant-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: parlant-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - parlant-network
+
+  # =============================================================================
+  # Core Application Services
+  # =============================================================================
+  parlant-api:
+    build:
+      context: .
+      dockerfile: docker/parlant/Dockerfile
+    container_name: parlant-api
+    restart: unless-stopped
+    ports:
+      - "8800:8800"
+    environment:
+      - PARLANT_HOME=/data
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-parlant}:${POSTGRES_PASSWORD:-parlant_secret}@postgres:5432/${POSTGRES_DB:-parlant}
+      - REDIS_URL=redis://redis:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - parlant-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8800/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - parlant-network
+
+  # =============================================================================
+  # AI Services (GPU-enabled)
+  # =============================================================================
+  chattts:
+    build:
+      context: ./docker/chattts
+      dockerfile: Dockerfile
+    container_name: parlant-chattts
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    volumes:
+      - chattts-models:/models
+      - chattts-cache:/root/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - parlant-network
+
+  whisper-stt:
+    build:
+      context: ./docker/whisper
+      dockerfile: Dockerfile
+    container_name: parlant-whisper
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL:-base}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    volumes:
+      - whisper-models:/models
+      - whisper-cache:/root/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - parlant-network
+
+  # =============================================================================
+  # Twilio Integration Service
+  # =============================================================================
+  twilio-integration:
+    build:
+      context: ./docker/twilio
+      dockerfile: Dockerfile
+    container_name: parlant-twilio
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    environment:
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
+      - PARLANT_URL=http://parlant-api:8800
+      - PARLANT_AGENT_ID=${PARLANT_AGENT_ID}
+      - PARLANT_RESPONSE_TIMEOUT=${PARLANT_RESPONSE_TIMEOUT:-30}
+      - TTS_URL=http://chattts:8001
+      - STT_URL=http://whisper-stt:8002
+      - REDIS_URL=redis://redis:6379
+      - PUBLIC_URL=${PUBLIC_URL:-http://localhost:8003}
+    depends_on:
+      - parlant-api
+      - chattts
+      - whisper-stt
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - parlant-network
+
+  # =============================================================================
+  # Web Admin Frontend
+  # =============================================================================
+  web-admin:
+    build:
+      context: ./docker/web-admin
+      dockerfile: Dockerfile
+    container_name: parlant-web-admin
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_PARLANT_API_URL=http://localhost:8800
+      - REACT_APP_TWILIO_SERVICE_URL=http://localhost:8003
+    depends_on:
+      - parlant-api
+      - twilio-integration
+    networks:
+      - parlant-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  parlant-data:
+    driver: local
+  chattts-models:
+    driver: local
+  chattts-cache:
+    driver: local
+  whisper-models:
+    driver: local
+  whisper-cache:
+    driver: local
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  parlant-network:
+    driver: bridge

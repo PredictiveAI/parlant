@@ -1,0 +1,8 @@
+# ChatTTS FastAPI Wrapper Dependencies
+# Note: torch, torchaudio, and ChatTTS are installed in Dockerfile
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.6
+pydantic>=2.5.0
+numpy>=1.24.0
+scipy>=1.11.0
