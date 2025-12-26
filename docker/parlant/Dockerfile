@@ -30,7 +30,9 @@ ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Install Parlant with common optional dependencies
-RUN uv pip install ".[anthropic,mongo]"
+# Increase timeout for large packages like NVIDIA CUDA
+ENV UV_HTTP_TIMEOUT=300
+RUN uv pip install ".[anthropic,mongo,chroma]"
 
 # =============================================================================
 # Production Stage
@@ -74,5 +76,6 @@ EXPOSE 8800
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8800/healthz || exit 1
 
-# Start Parlant server
-CMD ["parlant-server"]
+# Start Parlant server (use --anthropic flag for Anthropic API)
+# Override with docker-compose command if using different LLM provider
+CMD ["parlant-server", "run", "--anthropic"]
